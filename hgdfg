@@ -6350,7 +6350,10 @@ const GENRES_DATA = {
             
             const [setupMode, setSetupMode] = useState(false);
             const [trainingMode, setTrainingMode] = useState(() => localStorage.getItem('musicQuiz_sp_mode') || 'random');
-            const [selectedArtists, setSelectedArtists] = useState([]);
+           const [selectedArtists, setSelectedArtists] = useState(() => {
+                const saved = localStorage.getItem('musicQuiz_sp_artist');
+                return saved ? [saved] : [];
+            });
             const [selectedGenres, setSelectedGenres] = useState([]);
             const [selectedDecades, setSelectedDecades] = useState([]);
             const [hitFilter, setHitFilter] = useState('all');
@@ -6393,7 +6396,7 @@ const GENRES_DATA = {
                 setAudioError(false);
                 setIsPlaying(false);
                 setRoundCounter(prev => prev + 1);
-                setHintUsed(false); // Skryje nápovědu pro nové kolo
+                setHintUsed(false); 
                 
                 setArtistGuess("");
                 setSongGuess("");
@@ -6417,8 +6420,8 @@ const GENRES_DATA = {
                         let randomTerm = '';
                         let minRank = 250000;
                         
-                        if (trainingMode === 'artist' && selectedArtist) {
-                            randomTerm = `artist:"${selectedArtist}"`;
+                        if (trainingMode === 'artist' && selectedArtists.length > 0) {
+                            randomTerm = `artist:"${selectedArtists[0]}"`;
                             minRank = 0; 
                         } else {
                             const isPriority = Math.random() < 0.60; 
@@ -6485,8 +6488,8 @@ const GENRES_DATA = {
                             
                             if (artistName.includes('karaoke') || artistName.includes('tribute') || titleName.includes('karaoke') || artistName.includes('cover') || artistName.includes('deezer') || artistName.includes('sound') || titleName.includes('sleep') || titleName.includes('rain') || titleName.includes('noise')) return false;
                             
-                            if (trainingMode === 'artist' && selectedArtist) {
-                                if (artistName !== selectedArtist.toLowerCase()) return false;
+                            if (trainingMode === 'artist' && selectedArtists.length > 0) {
+                                if (artistName !== selectedArtists[0].toLowerCase()) return false;
                             } else {
                                 if (targetCategory === 'EN') {
                                     if (nonEnglishCharsPattern.test(track.artist.name) || nonEnglishCharsPattern.test(track.title)) return false;
@@ -6526,7 +6529,6 @@ const GENRES_DATA = {
                             
                             if (allowArtist) {
                                 foundTrack = candidate;
-                                
                                 recentTracksSp.push(candidate.id);
                                 if (recentTracksSp.length > 40) recentTracksSp.shift();
                                 localStorage.setItem('musicQuiz_recent_track_ids', JSON.stringify(recentTracksSp));
@@ -6536,6 +6538,49 @@ const GENRES_DATA = {
                                     if (recentArtists.length > 60) recentArtists.shift();
                                     localStorage.setItem('musicQuiz_recent_artists', JSON.stringify(recentArtists));
                                 }
+
+                                // --- VYTVOŘENÍ 4 MOŽNOSTÍ S CHYTROU PAMĚTÍ ---
+                                let spPool = [];
+                                try { spPool = JSON.parse(localStorage.getItem('musicQuiz_sp_pool')) || []; } catch(e) {}
+                                const newPool = [...spPool, ...validSongs.map(s => ({id: s.id, title: s.title, artist: {name: s.artist.name}}))];
+                                const uniquePool = newPool.filter((v, i, a) => a.findIndex(t => (t.id === v.id)) === i).slice(-300);
+                                localStorage.setItem('musicQuiz_sp_pool', JSON.stringify(uniquePool));
+
+                                const formatChoice = (artist, title) => trainingMode === 'artist' ? title : artist;
+                                const distractors = [];
+                                
+                                let activePool = trainingMode === 'artist' 
+                                    ? uniquePool.filter(s => s.artist.name === foundTrack.artist.name && s.id !== foundTrack.id)
+                                    : uniquePool.filter(s => s.artist.name !== foundTrack.artist.name);
+                                    
+                                const usedDistractorArtists = new Set();
+                                let failsafe = 0;
+                                
+                                while (distractors.length < 3 && activePool.length > 0 && failsafe < 200) {
+                                    failsafe++;
+                                    const randIdx = Math.floor(Math.random() * activePool.length);
+                                    const c = activePool[randIdx];
+                                    
+                                    if (trainingMode === 'artist' || !usedDistractorArtists.has(c.artist.name)) {
+                                        const distText = formatChoice(c.artist.name, c.title);
+                                        if (!distractors.includes(distText)) {
+                                            distractors.push(distText);
+                                            usedDistractorArtists.add(c.artist.name);
+                                            activePool.splice(randIdx, 1);
+                                        }
+                                    }
+                                }
+                                
+                                while (distractors.length < 3) {
+                                    const fallbackArtist = ALL_ARTISTS[Math.floor(Math.random() * ALL_ARTISTS.length)];
+                                    const fallback = trainingMode === 'artist' ? "Neznámá skladba" : fallbackArtist;
+                                    if (!distractors.includes(fallback)) distractors.push(fallback);
+                                }
+                                
+                                const correctAnswer = formatChoice(foundTrack.artist.name, foundTrack.title);
+                                foundTrack.finalChoices = shuffleArray([correctAnswer, ...distractors]);
+                                foundTrack.correctAnswer = correctAnswer;
+                                // -----------------------------------------
                             }
                         }
                     }
@@ -6549,7 +6594,9 @@ const GENRES_DATA = {
                         albumName: foundTrack.album.title || t.unknownAlbum,
                         rank: foundTrack.rank, 
                         previewUrl: foundTrack.preview.replace(/^http:\/\//i, 'https://'),
-                        artworkUrl: foundTrack.album.cover_xl ? foundTrack.album.cover_xl.replace(/^http:\/\//i, 'https://') : null
+                        artworkUrl: foundTrack.album.cover_xl ? foundTrack.album.cover_xl.replace(/^http:\/\//i, 'https://') : null,
+                        choices: foundTrack.finalChoices,
+                        correctAnswer: foundTrack.correctAnswer
                     });
                 } catch (err) {
                     setError(err.message || t.errFind);
@@ -6670,10 +6717,11 @@ const GENRES_DATA = {
             };
 
             const handleSaveSettings = () => {
-                // Opravena kontrola nového pole s interprety
                 if (trainingMode === 'artist' && selectedArtists.length === 0) return;
                 localStorage.setItem('musicQuiz_sp_mode', trainingMode);
-                localStorage.setItem('musicQuiz_sp_artist', selectedArtists[0] || "");
+                if (trainingMode === 'artist') {
+                    localStorage.setItem('musicQuiz_sp_artist', selectedArtists[0]);
+                }
                 localStorage.setItem('musicQuiz_sp_duration', previewDuration.toString());
                 localStorage.setItem('musicQuiz_sp_answerMode', answerMode);
                 setSetupMode(false);
@@ -6769,6 +6817,9 @@ const GENRES_DATA = {
                             {/* FILTRY ZEMĚ A POPULARITY SE SCHOVAJÍ PŘI KONKRÉTNÍM INTERPRETOVI */}
                             {trainingMode !== 'artist' && (
                                 <>
+                                    {/* FILTRY ZEMĚ A POPULARITY SE SCHOVAJÍ PŘI KONKRÉTNÍM INTERPRETOVI */}
+                            {trainingMode !== 'artist' && (
+                                <>
                                     {/* FILTR PŮVODU (VLAJKY) */}
                                     <div className="relative">
                                         <p className="text-slate-300 text-[10px] font-bold mb-2 uppercase">Země / Původ:</p>
@@ -6860,7 +6911,7 @@ const GENRES_DATA = {
                             <h1 className="text-2xl font-bold bg-gradient-to-r from-pink-400 to-indigo-400 bg-clip-text text-transparent flex items-center justify-center gap-2">
                                 <Volume2 className="text-pink-400" /> {t.guessSong}
                             </h1>
-                            <p className="text-slate-300 text-sm mt-2">{trainingMode === 'artist' ? selectedArtist : t.infiniteMode}</p>
+                            <p className="text-slate-300 text-sm mt-2">{trainingMode === 'artist' && selectedArtists.length > 0 ? selectedArtists[0] : t.infiniteMode}</p>
                         </div>
                     </div>
 
